@@ -1,4 +1,4 @@
-#update: 2020-02-26
+#update: 2020-02-27
 library(dplyr)
 
 article_data <- read.csv("/home/rstudio/WikiEvolution/article_data.csv",header = TRUE)
@@ -136,3 +136,86 @@ names(trait_partition_only_fitness) <- names(trait_partition_fitness)
 trait_popu_fitness <- cbind(trait_partition_only_fitness, popu_weekly_pageview[-1,])
 write.csv(trait_popu_fitness, "trait_population_fitness.csv" )
 
+############################
+# network data
+###########################
+
+coeditor_network <- read.csv("/home/rstudio/WikiEvolution/new_network_data.csv", header = T, sep=",")
+colnames(coeditor_network)
+#[1] "articleId"   "articleName" "revid"       "dateOfWeek"  "time"        "userid"     
+#[7] "user"        "article"   
+
+#####################
+#  clean up 
+######################
+
+# check that all articleId belongs to this 394 nodes pool
+#conditional removal of these nodes, based on condition
+condition <- coeditor_network$articleId %in% as.list(levels(coeditor_network$articleId))
+table(condition)
+#there is no additional nodes that do not belong to the pool
+#skip this step: hypernet_removed <- hypernet_raw[condition2, ]
+
+# assign user IP as userid
+coeditor_network$uid <- NA
+
+# if userid ==0, meanign it is an IP address, assign it an ID from username
+# ifelse, keep the original ID
+# For the columns that are factors, you can only assign values that are factor levels. 
+# If you wanted to assign a value that wasn't currently a factor level,
+# you would need to create the additional level first:
+levels(coeditor_network$uid) <-c(levels(coeditor_network$user))
+coeditor_network$uid <- ifelse(coeditor_network$userid ==0,as.character(coeditor_network$user),as.character(coeditor_network$userid))
+class(coeditor_network$uid)
+coeditor_network <- coeditor_network[,-c(6:7)]
+colnames(coeditor_network)
+#[1] "articleId"   "articleName" "revid"       "dateOfWeek"  "time"       
+#[6] "article"     "uid"         "year"       
+#remove the two old user id columns to only keep the new uid column
+
+#####################
+## weekly network construction
+######################
+
+# desired output columns: weekofYear, articleId, network metric1, network metric2 ...
+
+makemetrics <- function(gr) {
+  data.frame(Degree_undir = degree(gr, mode = "all", normalized = TRUE), 
+             Degree_in = degree(gr,mode = "in",normalized = TRUE), 
+             Degree_out = degree(gr,mode = "out",normalized = TRUE), 
+             Closeness_out = closeness(gr, mode="out"), 
+             Closeness_in = closeness(gr, mode="in"), 
+             Closeness_undir= closeness(gr, mode="all"),
+             constraint = constraint(gr),
+             Betweenness_dir = betweenness(gr,directed = TRUE, normalized = TRUE),
+             Betweenness_undir = betweenness(gr,directed = F, normalized = TRUE),
+             eigen_dir = eigen_centrality(gr, directed = TRUE, scale = TRUE)$vector,
+             eigen_undir = eigen_centrality(gr, directed = F, scale = TRUE)$vector,
+             hub = hub_score(gr, scale = TRUE)$vector,
+             authority = authority_score(gr, scale = TRUE)$vector,
+             page_rank = page_rank(gr,directed = TRUE, damping = 0.85)$vector,
+             transitivity = transitivity(gr, type="local")
+  )
+}
+
+#reassignment of dateOfWeek value: if before 2017w00, assign "before 2017"
+coeditor_network$year <- NA
+coeditor_network$year <- substr(coeditor_network$dateOfWeek, start = 1, stop = 4)
+levels(coeditor_network$dateOfWeek) <- c(levels(coeditor_network$dateOfWeek), "before2017") 
+coeditor_network$dateOfWeek[coeditor_network$year<2017] <- 'before2017'
+coeditor_network$dateOfWeek
+
+#check the distribution of article-revision counts during this period of time
+revision_count <- coeditor_network %>% 
+  group_by(articleId) %>%
+  summarise(num_revision = n_distinct(revid))
+
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#1.00   10.00   15.00   23.87   25.00  438.00 
+# 25% of articles have 10 or less revisions over the 
+a<-revision_count %>% 
+  count(num_revision) %>% 
+  mutate(Cum = cumsum(n)/sum(n))
+
+#10% of articles have 6 or less revisions
+#remove them as they received much less attention from editors
