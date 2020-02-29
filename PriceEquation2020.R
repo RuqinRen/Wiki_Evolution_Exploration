@@ -1,5 +1,6 @@
-#update: 2020-02-27
 library(dplyr)
+library(igraph)
+library(Matrix)
 
 article_data <- read.csv("/home/rstudio/WikiEvolution/article_data.csv",header = TRUE)
 
@@ -151,8 +152,8 @@ colnames(coeditor_network)
 
 # check that all articleId belongs to this 394 nodes pool
 #conditional removal of these nodes, based on condition
-condition <- coeditor_network$articleId %in% as.list(levels(coeditor_network$articleId))
-table(condition)
+#condition <- coeditor_network$articleId %in% as.list(levels(coeditor_network$articleId))
+#table(condition)
 #there is no additional nodes that do not belong to the pool
 #skip this step: hypernet_removed <- hypernet_raw[condition2, ]
 
@@ -170,7 +171,7 @@ class(coeditor_network$uid)
 coeditor_network <- coeditor_network[,-c(6:7)]
 colnames(coeditor_network)
 #[1] "articleId"   "articleName" "revid"       "dateOfWeek"  "time"       
-#[6] "article"     "uid"         "year"       
+#[6] "article"     "uid"           
 #remove the two old user id columns to only keep the new uid column
 
 #####################
@@ -179,17 +180,52 @@ colnames(coeditor_network)
 
 # desired output columns: weekofYear, articleId, network metric1, network metric2 ...
 
+#reassignment of dateOfWeek value: if before 2017w00, assign "before 2017"
+coeditor_network$year <- NA
+coeditor_network$year <- substr(coeditor_network$dateOfWeek, start = 1, stop = 4)
+levels(coeditor_network$dateOfWeek) <- c(levels(coeditor_network$dateOfWeek), 'before2017')
+coeditor_network$dateOfWeek[coeditor_network$year<2017] <- 'before2017'
+#num of revisions / dateOfWeek distribution
+table(coeditor_network$dateOfWeek)
+
+#check the distribution of article-revision counts during this period of time
+#revision_count <- coeditor_network %>% 
+#  group_by(articleId) %>%
+#  summarise(num_revision = n_distinct(revid))
+
+#Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#1.00   10.00   15.00   23.87   25.00  438.00 
+# 25% of articles have 10 or less revisions
+# a<-revision_count %>% 
+#  count(num_revision) %>% 
+#  mutate(Cum = cumsum(n)/sum(n))
+#10% of articles have 6 or less revisions
+
+#split by dateOfWeek
+network_df_split <- split(coeditor_network[,c(2,7)], coeditor_network$dateOfWeek)
+
+#convert each weekly df into a sparse adjacency matrix (first column will be kept)
+getFirstColumnOneModeNet<- function(df) {
+  A <- spMatrix(nrow=length(unique(df[,1])),
+                ncol=length(unique(df[,2])),
+                i = as.numeric(factor(df[,1])),
+                j = as.numeric(factor(df[,2])),
+                x = rep(1, length(as.numeric(df[,1]))) )
+  row.names(A) <- levels(factor(df[,1]))
+  colnames(A) <- levels(factor(df[,2]))
+  Arow <- A %*% t(A)
+  return(Arow)
+}
+adjacency_mat<- lapply(network_df_split, function(x) getFirstColumnOneModeNet(x) )
+
+# from sparse adjacency network to a graph object
+net_gr<- lapply(adjacency_mat, function(x) graph_from_adjacency_matrix(x))
+
 makemetrics <- function(gr) {
   data.frame(Degree_undir = degree(gr, mode = "all", normalized = TRUE), 
-             Degree_in = degree(gr,mode = "in",normalized = TRUE), 
-             Degree_out = degree(gr,mode = "out",normalized = TRUE), 
-             Closeness_out = closeness(gr, mode="out"), 
-             Closeness_in = closeness(gr, mode="in"), 
              Closeness_undir= closeness(gr, mode="all"),
              constraint = constraint(gr),
-             Betweenness_dir = betweenness(gr,directed = TRUE, normalized = TRUE),
              Betweenness_undir = betweenness(gr,directed = F, normalized = TRUE),
-             eigen_dir = eigen_centrality(gr, directed = TRUE, scale = TRUE)$vector,
              eigen_undir = eigen_centrality(gr, directed = F, scale = TRUE)$vector,
              hub = hub_score(gr, scale = TRUE)$vector,
              authority = authority_score(gr, scale = TRUE)$vector,
@@ -198,24 +234,18 @@ makemetrics <- function(gr) {
   )
 }
 
-#reassignment of dateOfWeek value: if before 2017w00, assign "before 2017"
-coeditor_network$year <- NA
-coeditor_network$year <- substr(coeditor_network$dateOfWeek, start = 1, stop = 4)
-levels(coeditor_network$dateOfWeek) <- c(levels(coeditor_network$dateOfWeek), "before2017") 
-coeditor_network$dateOfWeek[coeditor_network$year<2017] <- 'before2017'
-coeditor_network$dateOfWeek
+#calculate network metrics
+net_gr <-lapply(net_gr, function(x) makemetrics(x))
+#build df
+net_metrics <- lapply(net_gr, function(x) as.data.frame(x))
+net_metrics <- lapply(net_metrics, function(x) add_rownames(x, var = "ArticleName"))
+net_metrics_time <- do.call(rbind,net_metrics)
+net_metrics_time <- add_rownames(net_metrics_time, var="Timestamp")
 
-#check the distribution of article-revision counts during this period of time
-revision_count <- coeditor_network %>% 
-  group_by(articleId) %>%
-  summarise(num_revision = n_distinct(revid))
+#re-organize time stamp
+net_time <- separate(net_metrics_time,col="Timestamp",into = c("Timestamp1","Timestamp2" ), 
+                          convert = FALSE) %>%
+  unite_(., "Timestamp", c("Timestamp1","Timestamp2"))
 
-#Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
-#1.00   10.00   15.00   23.87   25.00  438.00 
-# 25% of articles have 10 or less revisions over the 
-a<-revision_count %>% 
-  count(num_revision) %>% 
-  mutate(Cum = cumsum(n)/sum(n))
+names(net_time)
 
-#10% of articles have 6 or less revisions
-#remove them as they received much less attention from editors
