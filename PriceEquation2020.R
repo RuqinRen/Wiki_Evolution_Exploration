@@ -1,6 +1,8 @@
 library(dplyr)
 library(igraph)
 library(Matrix)
+library(tidyr)
+library(readxl)
 
 article_data <- read.csv("/home/rstudio/WikiEvolution/article_data.csv",header = TRUE)
 
@@ -32,7 +34,7 @@ popu_weekly_pageview <- article_data %>%
 #categorize numerical features into binary features by breaking from mean value
 # 10 features
 #getting 10 features' mean values
-article_data %>% select(c(6:16)) %>% summary()
+# article_data %>% select(c(6:16)) %>% summary()
 #Mean   : 4893       Mean   :  7.727       Mean   : 40.91         Mean   :12.19
 # "contentLength" "numOfreferences"        "numOfPageLinks"      "nunOfCiteTemplates" 
 # Mean   : 4.286         Mean   :0.00042         binary     Mean   : 7.141       Mean   : 47.31  
@@ -53,6 +55,8 @@ bi_population_trait <- article_data %>%
     bi_coleman_liau_index=cut(coleman_liau_index, breaks=c(-Inf,15.09,Inf), labels=c("low","high")),
     bi_difficult_words=cut(difficult_words, breaks=c(-Inf,234.7,Inf), labels=c("low","high")),
   )
+
+write.csv(bi_population_trait, "/home/rstudio/WikiEvolution/bi_population_trait.csv")
 
 #trait fitness summary with the following columns
 #Generation_time /Trait / Trait_fitness_page_views
@@ -141,7 +145,7 @@ write.csv(trait_popu_fitness, "trait_population_fitness.csv" )
 # network data
 ###########################
 
-coeditor_network <- read.csv("/home/rstudio/WikiEvolution/new_network_data.csv", header = T, sep=",")
+coeditor_network <- read.csv("/home/rstudio/WikiEvolution/network_data.csv", header = TRUE)
 colnames(coeditor_network)
 #[1] "articleId"   "articleName" "revid"       "dateOfWeek"  "time"        "userid"     
 #[7] "user"        "article"   
@@ -239,13 +243,44 @@ net_gr <-lapply(net_gr, function(x) makemetrics(x))
 #build df
 net_metrics <- lapply(net_gr, function(x) as.data.frame(x))
 net_metrics <- lapply(net_metrics, function(x) add_rownames(x, var = "ArticleName"))
-net_metrics_time <- do.call(rbind,net_metrics)
-net_metrics_time <- add_rownames(net_metrics_time, var="Timestamp")
+net_metrics <- do.call(rbind,net_metrics)
+net_metrics_time <- add_rownames(net_metrics, var="Timestamp")
 
 #re-organize time stamp
-net_time <- separate(net_metrics_time,col="Timestamp",into = c("Timestamp1","Timestamp2" ), 
-                          convert = FALSE) %>%
-  unite_(., "Timestamp", c("Timestamp1","Timestamp2"))
+net_time <- separate(net_metrics_time,col="Timestamp",into = c("Timestamp1","Timestamp2" ), convert = FALSE)
+# separate and unite, a useful combination  %>%unite_(., "Timestamp", c("Timestamp1","Timestamp2"))
+remove(net_metrics_time, net_metrics, net_gr, adjacency_mat, network_df_split)
 
-names(net_time)
+table(is.na(net_time))
+
+#dichotomize by mean value
+net_bi_time <- net_time %>%
+  group_by(Timestamp1) %>%
+  mutate(bi_Degree_undir = Degree_undir > mean(net_time$Degree_undir), 
+         bi_Closeness_undir = Closeness_undir > mean(net_time$Closeness_undir),
+         bi_constraint = constraint > mean(net_time$constraint),
+         bi_Betweenness_undir = Betweenness_undir > mean(net_time$Betweenness_undir),
+         bi_eigen_undir = eigen_undir > mean(net_time$eigen_undir),
+         bi_hub = hub > mean(net_time$hub),
+         bi_authority = authority > mean(net_time$authority),
+         bi_page_rank = page_rank > mean(net_time$page_rank),
+         bi_transitivity = transitivity > mean(net_time$transitivity)
+  )
+names(net_bi_time)
+
+#2017w00, 2017W00, there are inconsistent cases of W, make them all upper case
+net_bi_time$Timestamp1 <- tolower(net_bi_time$Timestamp1)
+write.csv(net_bi_time,"/home/rstudio/WikiEvolution/weekly_net_bi.csv")
+#read.csv(bi_population_trait, xx)
+
+net_trait_bi_time <- left_join(net_bi_time,  bi_population_trait, 
+                              by=c("Timestamp1" ="Y.W","ArticleName" ="articleName"))
+net_trait_bi_time<- unique(net_trait_bi_time)
+
+net_trait_bi_time <- net_trait_bi_time[,-c(2,22,23,24)]
+#net_trait_bi_time has 47 columns: 
+#1:2 are basic info 
+#3:20 are network metrics(quant and binary)
+#21:43 are 11+10(has info box is binary already) content metrics +2 outcome
+# two outcome variables: quality and pageview
 
