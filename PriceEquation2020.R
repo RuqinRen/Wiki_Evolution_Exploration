@@ -184,11 +184,11 @@ colnames(coeditor_network)
 
 # desired output columns: weekofYear, articleId, network metric1, network metric2 ...
 
-#reassignment of dateOfWeek value: if before 2017w00, assign "before 2017"
+#reassignment of dateOfWeek value: if before 2017w00, assign "before 2016w99"
 coeditor_network$year <- NA
 coeditor_network$year <- substr(coeditor_network$dateOfWeek, start = 1, stop = 4)
-levels(coeditor_network$dateOfWeek) <- c(levels(coeditor_network$dateOfWeek), 'before2017')
-coeditor_network$dateOfWeek[coeditor_network$year<2017] <- 'before2017'
+levels(coeditor_network$dateOfWeek) <- c(levels(coeditor_network$dateOfWeek), '2016w99')
+coeditor_network$dateOfWeek[coeditor_network$year<2017] <- '2016w99'
 #num of revisions / dateOfWeek distribution
 table(coeditor_network$dateOfWeek)
 
@@ -273,14 +273,18 @@ net_bi_time$Timestamp1 <- tolower(net_bi_time$Timestamp1)
 write.csv(net_bi_time,"/home/rstudio/WikiEvolution/weekly_net_bi.csv")
 #read.csv(bi_population_trait, xx)
 
-net_trait_bi_time <- left_join(net_bi_time,  bi_population_trait, 
-                              by=c("Timestamp1" ="Y.W","ArticleName" ="articleName"))
-net_trait_bi_time<- unique(net_trait_bi_time)
 
-net_trait_bi_time <- net_trait_bi_time[,-c(2,22,23,24)]
-#net_trait_bi_time has 47 columns: 
-#1:2 are basic info 
-#3:20 are network metrics(quant and binary)
-#21:43 are 11+10(has info box is binary already) content metrics +2 outcome
+net_trait_bi_time <- left_join( bi_population_trait, net_bi_time, 
+                              by=c( "Y.W"= "Timestamp1", "articleName"="ArticleName"))
+net_trait_bi_time<- unique(net_trait_bi_time)
+names(net_trait_bi_time)
+net_trait_bi_time <- net_trait_bi_time[,-c(1,4,5,29)]
+#net_trait_bi_time has 43 columns: 
+#26:43 are network metrics(quant and binary)
+#3:25 are 11+10(has info box is binary already) content metrics +2 outcome
 # two outcome variables: quality and pageview
 
+#fill 26:43 because network measures are not repeated on weekly basis. They are only captured when values change
+# use dplyr:fill function
+net_trait_bi_time <- net_trait_bi_time %>% fill(c(26:43), .direction='updown')
+write.csv(net_trait_bi_time, '/home/rstudio/WikiEvolution/weekly_net_trait_bi.csv')
