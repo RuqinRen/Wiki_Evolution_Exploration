@@ -303,21 +303,43 @@ names(trait_partition_only_fitness) <- names(trait_partition_fitness)
 
 #combined into a df of 165 time periods, 40 = 20*2 low/high page view sum
 #first week is wrong, remove the first week 2017w00
-trait_partition_only_fitness <- trait_partition_only_fitness[-1,]
-
+trait_partition_only_fitness <- trait_partition_only_fitness[-c(1,164,163),]
 write.csv(trait_partition_only_fitness, "/home/rstudio/WikiEvolution/trait_population_fitness.csv" )
 
 #####################
 ## fitness to natural selection (Price Equation)
 ######################
 
+trait_popu_fitness <- read.csv("/home/rstudio/WikiEvolution/trait_population_fitness.csv", header = TRUE )
 #store nc results as a vector
+trait_popu_fitness <- trait_popu_fitness[,-1]
 
-list_nc_page_views <- as.list(rep("",40))  #40 traits of var(high,low)/popu_mean
+list_nc_page_views <- as.list(rep("",20))  #20 traits of var(high,low)/popu_mean
 
-for(i in 1:xx){
+#calculation of nc
+for(i in 1:20){
   temp <- as.data.frame(trait_popu_fitness[,c(i,20+i,42)]) #i=trait low, i+20 =trait high, 42=fitness
   vars<-apply(temp[1:2],1,var)
   nc <- vars/temp[["weekly_pageview"]]
   list_nc_page_views[[i]] <- nc
 }
+
+#re-organize into df
+nc_df <- do.call(cbind, list_nc_page_views)
+nc_df <- as.data.frame(nc_df)
+names(nc_df) <-  paste(list_of_traits ,"page_views",sep="_")
+nc_df <- cbind(nc_df, trait_popu_fitness$Y.W) #add timestamp
+
+#write
+write.csv(nc_df, "/home/rstudio/WikiEvolution/nc_df.csv")
+
+#nc[,c(71:75)] %>%
+#  gather(key=type_of_DV,
+#         value=Natural_selection,
+#         trait_mean_search_traffic,            
+         # trait_mean_page_view,                  
+         # network_mean_page_view,               
+#         network_mean_search_traffic
+#  ) %>%
+#  ggplot(aes(x=ID, y=Natural_selection, colour=type_of_DV)) +
+#  geom_line()
