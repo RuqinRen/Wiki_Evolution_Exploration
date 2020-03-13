@@ -3,7 +3,9 @@ library(igraph)
 library(Matrix)
 library(tidyr)
 library(readxl)
-
+library(coin)
+library(influenceR)
+library(egor)
 #####################
 ## article content data
 ######################
@@ -29,8 +31,8 @@ colnames(article_data)
 #check for missing values
 summary(article_data$pageView)
 # 174 na values
-# article_data %>% select(articleName, Y.W, pageView) %>% filter(is.na(pageView))
-# because two articles were created during this period of time.Hence not enough data
+article_data <- article_data %>% filter(!is.na(pageView))
+# because two articles were created only after the observation period start. Hence missing 174 rows of data
 
 popu_weekly_pageview <- article_data %>% 
  group_by(Y.W) %>% 
@@ -142,35 +144,43 @@ getFirstColumnOneModeNet<- function(df) {
   Arow <- A %*% t(A)
   return(Arow)
 }
-adjacency_mat<- lapply(network_df_split, function(x) getFirstColumnOneModeNet(x) )
 
-# from sparse adjacency network to a graph object
-net_gr<- lapply(adjacency_mat, function(x) graph_from_adjacency_matrix(x))
+adjacency_mat<- lapply(network_df_split, function(x) getFirstColumnOneModeNet(x) )
+remove(network_df_split)
 
 makemetrics <- function(gr) {
   data.frame(Degree_undir = degree(gr, mode = "all", normalized = TRUE), 
              Closeness_undir= closeness(gr, mode="all"),
-             constraint = constraint(gr),
-             Betweenness_undir = betweenness(gr,directed = F, normalized = TRUE),
+             Betweenness_undir = igraph::betweenness(gr,directed = F, normalized = TRUE),
              eigen_undir = eigen_centrality(gr, directed = F, scale = TRUE)$vector,
+             page_rank = page_rank(gr,directed = FALSE, damping = 0.85)$vector,
              hub = hub_score(gr, scale = TRUE)$vector,
              authority = authority_score(gr, scale = TRUE)$vector,
-             page_rank = page_rank(gr,directed = TRUE, damping = 0.85)$vector,
-             transitivity = transitivity(gr, type="local")
+             constraint = constraint(gr),
+             transitivity = transitivity(gr, type="local"),
+             eff_size = ens(gr),
+             density = unlist(lapply(make_ego_graph(gr), function(x) edge_density(x, loops= FALSE) ))
   )
 }
 
+#from sparse adjacency network to a graph object
+net_gr<- lapply(adjacency_mat, function(x) graph_from_adjacency_matrix(x, mode = "max",weighted = TRUE, diag = F))
+
 #calculate network metrics
 net_gr <-lapply(net_gr, function(x) makemetrics(x))
+
 #build df
 net_metrics <- lapply(net_gr, function(x) as.data.frame(x))
 net_metrics <- lapply(net_metrics, function(x) add_rownames(x, var = "ArticleName"))
 net_metrics <- do.call(rbind,net_metrics)
 net_metrics_time <- add_rownames(net_metrics, var="Timestamp")
+#remove na values
+net_metrics_time[is.na(net_metrics_time)] <- 0
 
 #re-organize time stamp
 net_time <- separate(net_metrics_time,col="Timestamp",into = c("Timestamp1","Timestamp2" ), convert = FALSE)
 # separate and unite, a useful combination  %>%unite_(., "Timestamp", c("Timestamp1","Timestamp2"))
+#clean up space
 remove(net_metrics_time, net_metrics, net_gr, adjacency_mat, network_df_split)
 
 table(is.na(net_time))
@@ -180,39 +190,41 @@ net_bi_time <- net_time %>%
   group_by(Timestamp1) %>%
   mutate(bi_Degree_undir = Degree_undir > mean(net_time$Degree_undir), 
          bi_Closeness_undir = Closeness_undir > mean(net_time$Closeness_undir),
-         bi_constraint = constraint > mean(net_time$constraint),
          bi_Betweenness_undir = Betweenness_undir > mean(net_time$Betweenness_undir),
          bi_eigen_undir = eigen_undir > mean(net_time$eigen_undir),
+         bi_page_rank = page_rank > mean(net_time$page_rank),
          bi_hub = hub > mean(net_time$hub),
          bi_authority = authority > mean(net_time$authority),
-         bi_page_rank = page_rank > mean(net_time$page_rank),
-         bi_transitivity = transitivity > mean(net_time$transitivity)
+         bi_constraint = constraint > mean(net_time$constraint),
+         bi_transitivity = transitivity > mean(net_time$transitivity),
+         bi_eff_size = eff_size > mean(net_time$eff_size),
+         bi_density = density > mean(net_time$density)
   )
 names(net_bi_time)
-
+remove(net_time)
 #2017w00, 2017W00, there are inconsistent cases of W, make them all upper case
 net_bi_time$Timestamp1 <- tolower(net_bi_time$Timestamp1)
 write.csv(net_bi_time,"/home/rstudio/WikiEvolution/weekly_net_bi.csv")
 
-
 #####################
 ## binary network + article content traits
 ######################
-
-#read.csv(bi_population_trait, xx)
+net_bi_time <- read.csv("/home/rstudio/WikiEvolution/weekly_net_bi.csv", header = TRUE)
+bi_population_trait <- read.csv("/home/rstudio/WikiEvolution/bi_population_trait.csv",header = TRUE)
 net_trait_bi_time <- left_join( bi_population_trait, net_bi_time, 
                               by=c( "Y.W"= "Timestamp1", "articleName"="ArticleName"))
 net_trait_bi_time<- unique(net_trait_bi_time)
 names(net_trait_bi_time)
-net_trait_bi_time <- net_trait_bi_time[,-c(1,4,5,29)]
-#net_trait_bi_time has 43 columns: 
-# 9 network metrics
-# 11(has info box is binary already) content metrics 
+net_trait_bi_time <- subset(net_trait_bi_time, select=-c(X.x, X.y,time,revisionID,Timestamp2))
+#net_trait_bi_time has 44 columns: 
+# 11 network metrics *2
+# 11(has info box is binary already) content metrics * 2 -1 
 # two outcome variables: quality and pageview
 
-#fill 26:43 columns because network measures are not repeated on weekly basis. They are only captured when values change
+#fill 27:48 columns because network measures are not repeated on weekly basis. They are only captured when values change
 # use dplyr:fill function
-net_trait_bi_time <- net_trait_bi_time %>% fill(c(26:43), .direction='updown')
+net_trait_bi_time <- net_trait_bi_time %>% fill(c(27:48), .direction='updown')
+table(is.na(net_trait_bi_time)) #check again
 write.csv(net_trait_bi_time, '/home/rstudio/WikiEvolution/weekly_net_trait_bi.csv')
 
 #####################
@@ -227,28 +239,29 @@ net_trait_bi_time <- read.csv("/home/rstudio/WikiEvolution/weekly_net_trait_bi.c
 #e.g. time1/traitA/ high_partition/ sum /fitness
 
 #building empty lists
-list_of_df_lowpartition <- as.list(rep("", 20)) 
-list_of_df_highpartition <- as.list(rep("", 20)) 
+list_of_df_lowpartition <- as.list(rep("", 22)) 
+list_of_df_highpartition <- as.list(rep("", 22)) 
 
 #list of 11 trait names
 list_of_traits <- c("bi_content_length"  ,     "hasBox" ,
                     "bi_num_references"  ,     "bi_num_page_links"  ,     "bi_num_cite_temp"  ,     
                     "bi_num_categories"  ,     "bi_image_by_length" ,     "bi_num_lv2_heading"  ,      
                     "bi_flesch_reading_score", "bi_coleman_liau_index" ,  "bi_difficult_words",
-                    "bi_Degree_undir"    ,      "bi_Closeness_undir"   ,  "bi_constraint",          
-                    "bi_Betweenness_undir",     "bi_eigen_undir" ,        "bi_hub",       
-                    "bi_authority"    ,         "bi_page_rank",           "bi_transitivity" )
+                    "bi_Degree_undir"   ,      "bi_Closeness_undir" ,     "bi_Betweenness_undir" ,
+                    "bi_eigen_undir"    ,      "bi_page_rank"  ,          "bi_hub" ,
+                    "bi_authority" ,           "bi_constraint"    ,       "bi_transitivity"  ,  
+                    "bi_eff_size"    ,         "bi_density" )
 
 
-for(i in 1:20) { 
-  list_of_df_lowpartition[[i]]  <-  net_trait_bi_time %>% 
+for(i in 1:22) { 
+  list_of_df_highpartition[[i]]  <-  net_trait_bi_time %>% 
     group_by(Y.W, get(list_of_traits[[i]])) %>% #there are implicit NA levels due to missing data, each trait generates three rows: low/high/NA
     summarise( page_view_sum = sum(pageView,na.rm = TRUE)) %>%
     filter(page_view_sum > 0) %>% #NA rows has 0 value, remove them
-    filter(row_number() %% 2 == 1)  %>% #selet the "low"value rows because low appears after high
+    filter(row_number() %% 2 == 1)  %>% #high before low, so %%2 ==1 means high, odd number
     ungroup()
   
-  list_of_df_highpartition[[i]]  <-  net_trait_bi_time %>% 
+  list_of_df_lowpartition[[i]]  <-  net_trait_bi_time %>% 
     group_by(Y.W, get(list_of_traits[[i]])) %>% 
     summarise( page_view_sum = sum(pageView, na.rm = TRUE)) %>%
     filter(page_view_sum > 0) %>% 
@@ -269,7 +282,7 @@ for(i in 1:20) {
 #the output are two lists of traits at low values pageView sum/ high values pageView sum
 #combine them into dfs
 
-for(i in 1:20) { 
+for(i in 1:22) { 
   list_of_df_lowpartition[[i]] <- 
     list_of_df_lowpartition[[i]] %>% 
      select(ends_with('low'))
@@ -286,10 +299,10 @@ remove(trait_partition_fitness_low)
 remove(trait_partition_fitness_high)
 
 totalYW = as.integer(nrow(trait_partition_fitness))
-trait_partition_only_fitness <- as.data.frame(matrix(NA, nrow = totalYW, ncol = 40))
+trait_partition_only_fitness <- as.data.frame(matrix(NA, nrow = totalYW, ncol = 44))
 trait_partition_only_fitness <- cbind(trait_partition_only_fitness, popu_weekly_pageview)
 
-seq = c(1:40, 42) #skip Y.W column, which does not have fitness 
+seq = c(1:44, 46) #skip Y.W column, which does not have fitness 
 for(i in seq){
   raw = trait_partition_fitness[[i]]
   ahead = lead(raw)
@@ -301,7 +314,7 @@ for(i in seq){
 names(trait_partition_only_fitness) <- names(trait_partition_fitness)
 # output is a df with columns:fitness calculated from each partition
 
-#combined into a df of 165 time periods, 40 = 20*2 low/high page view sum
+#combined into a df of 165 time periods, 44 = 22*2 low/high page view sum
 #first week is wrong, remove the first week 2017w00
 trait_partition_only_fitness <- trait_partition_only_fitness[-c(1,164,163),]
 write.csv(trait_partition_only_fitness, "/home/rstudio/WikiEvolution/trait_population_fitness.csv" )
@@ -311,14 +324,14 @@ write.csv(trait_partition_only_fitness, "/home/rstudio/WikiEvolution/trait_popul
 ######################
 
 trait_popu_fitness <- read.csv("/home/rstudio/WikiEvolution/trait_population_fitness.csv", header = TRUE )
-#store nc results as a vector
+# when read in this file, R auto-creates a column called X
 trait_popu_fitness <- trait_popu_fitness[,-1]
-
-list_nc_page_views <- as.list(rep("",20))  #20 traits of var(high,low)/popu_mean
+#store nc results as a vector
+list_nc_page_views <- as.list(rep("",22))  #22 traits of var(high,low)/popu_mean
 
 #calculation of nc
-for(i in 1:20){
-  temp <- as.data.frame(trait_popu_fitness[,c(i,20+i,42)]) #i=trait low, i+20 =trait high, 42=fitness
+for(i in 1:22){
+  temp <- as.data.frame(trait_popu_fitness[,c(i,22+i,46)]) #i=trait low, i+22 =trait high, 46=fitness
   vars<-apply(temp[1:2],1,var)
   nc <- vars/temp[["weekly_pageview"]]
   list_nc_page_views[[i]] <- nc
@@ -330,16 +343,168 @@ nc_df <- as.data.frame(nc_df)
 names(nc_df) <-  paste(list_of_traits ,"page_views",sep="_")
 nc_df <- cbind(nc_df, trait_popu_fitness$Y.W) #add timestamp
 
-#write
-write.csv(nc_df, "/home/rstudio/WikiEvolution/nc_df.csv")
+#transform raw variance into equidistant percentile rank
 
-#nc[,c(71:75)] %>%
-#  gather(key=type_of_DV,
-#         value=Natural_selection,
-#         trait_mean_search_traffic,            
-         # trait_mean_page_view,                  
-         # network_mean_page_view,               
-#         network_mean_search_traffic
-#  ) %>%
-#  ggplot(aes(x=ID, y=Natural_selection, colour=type_of_DV)) +
-#  geom_line()
+all_nc_value <- as.vector(as.matrix(nc_df[,c(1:22)])) #note: pay attention to column names
+nc_rank <- rank(all_nc_value)/length(all_nc_value) #rank and calculate percentile
+nc_rank <- as.data.frame(split(nc_rank, sample(1:22))) #split a long vector back to equal size chunks
+names(nc_rank) <- names(nc_df[,c(1:22)])
+nc_rank <- cbind(nc_rank, nc_df[,23])
+
+nc_rank <- nc_rank %>%
+  gather(key = type_of_DV,
+         value = ns_rank,
+         1:22) #only gather 1:20, leave out the time column. Time will be duplicated 
+
+nc_rank$DV_two_group <- rep(c("trait_based","network_based"),times = c(162*11, 162*11))
+colnames(nc_rank)[1] <- "weekly"
+
+#write
+write.csv(nc_rank, "/home/rstudio/WikiEvolution/nc_rank.csv")
+
+
+#############################
+## comparison of two groups: trait vs network
+#############################
+
+nc_rank <- read.csv("/home/rstudio/WikiEvolution/nc_rank.csv", header = TRUE)
+nc_rank$weekly <- as.factor(nc_rank$weekly)
+nc_rank$DV_two_group <- as.factor(nc_rank$DV_two_group)
+nc_rank$type_of_DV <- as.factor(nc_rank$type_of_DV)
+
+#consider weekly factor
+a <-oneway_test(ns_rank ~ DV_two_group |weekly , data = nc_rank, alternative="greater",distribution = approximate(nresample = 10000))
+a
+pvalue(a)
+
+#DV_two_group     mean
+#<fct>           <dbl>
+#1 network_based 0.506
+#2 trait_based   0.495
+
+#############################
+## comparison: among network configs
+#############################
+
+network_nc_rank <- nc_rank %>% filter(DV_two_group == 'network_based') %>% select(-DV_two_group)
+network_nc_rank$network_three_group <- NA
+levels(network_nc_rank$network_three_group) <- c("connectivity","embeddedness","redundancy")
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_Betweenness_undir_page_views"] <- 'embeddedness'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_Closeness_undir_page_views"] <- 'embeddedness'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_eigen_undir_page_views"] <- 'embeddedness'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_Degree_undir_page_views"] <- 'embeddedness'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_page_rank_page_views"] <- 'embeddedness'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_hub_page_views"] <- 'embeddedness'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_authority_page_views"] <- 'embeddedness'
+
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_eff_size_page_views"] <- 'redundancy'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_constraint_page_views"] <- 'redundancy'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_density_page_views"] <- 'connectivity'
+network_nc_rank$network_three_group[network_nc_rank$type_of_DV == "bi_transitivity_page_views"] <- 'connectivity'
+
+
+network_nc_rank %>% group_by(network_three_group) %>% summarise(mean = mean(ns_rank))
+network_nc_rank %>% group_by(type_of_DV) %>% summarise(mean = mean(ns_rank))
+
+# # A tibble: 11 x 2
+# type_of_DV                       mean
+# <chr>                           <dbl>
+# 1 bi_authority_page_views         0.507
+# 2 bi_Betweenness_undir_page_views 0.510
+# 3 bi_Closeness_undir_page_views   0.501
+# 4 bi_constraint_page_views        0.495
+# 5 bi_Degree_undir_page_views      0.477
+# 6 bi_density_page_views           0.509
+# 7 bi_eff_size_page_views          0.510
+# 8 bi_eigen_undir_page_views       0.517
+# 9 bi_hub_page_views               0.493
+# 10 bi_page_rank_page_views         0.488
+# 11 bi_transitivity_page_views      0.493
+
+
+network_nc_rank$weekly <- as.factor(network_nc_rank$weekly)
+network_nc_rank$network_three_group <- as.factor(network_nc_rank$network_three_group)
+network_nc_rank$type_of_DV <- as.factor(network_nc_rank$type_of_DV)
+
+write.csv(network_nc_rank, "/home/rstudio/WikiEvolution/network_nc_rank.csv")
+
+# compare group vs group
+network_nc_small <- network_nc_rank %>% filter(network_three_group != 'embeddedness')
+b <-oneway_test(ns_rank ~ network_three_group |weekly , data = network_nc_small, alternative="greater",distribution = approximate(nresample = 10000))
+b
+
+network_nc_small <- network_nc_rank %>% filter(network_three_group != 'connectivity')
+b <-oneway_test(ns_rank ~ network_three_group |weekly , data = network_nc_small, alternative="two.sided",distribution = approximate(nresample = 10000))
+b
+
+network_nc_small <- network_nc_rank %>% filter(network_three_group != 'redundancy')
+b <-oneway_test(ns_rank ~ network_three_group |weekly , data = network_nc_small, alternative="two.sided",distribution = approximate(nresample = 10000))
+b
+
+# compare each pair of network configuration
+network_list <- c("bi_Degree_undir_page_views"    ,      "bi_Closeness_undir_page_views"   ,  "bi_constraint_page_views", 
+                 "bi_Betweenness_undir_page_views",     "bi_eigen_undir_page_views" ,        "bi_page_rank_page_views",  
+                 "bi_transitivity_page_views" ,        "bi_eff_size_page_views",       "bi_density_page_views",
+                 "bi_authority_page_views",   "bi_hub_page_views")
+network_pairs <- as.data.frame(t(combn(network_list, m=2))) # 9 elements choose 2, get combinations. Transpose into tidy format
+names(network_pairs) <- c("firstvalue",'secondvalue')
+network_pairs$perm.test.greater <- NA
+network_pairs$perm.test.less <- NA
+network_pairs$perm.test.twoside <- NA
+
+for(i in 1:55){
+  getA <- network_pairs[i,1]
+  getB <- network_pairs[i,2]
+  temp <- network_nc_rank %>% filter(type_of_DV == as.character(get('getA')) | type_of_DV == as.character(get('getB')) )
+  
+  model <-oneway_test(ns_rank ~ type_of_DV | weekly , data = temp, alternative="greater", distribution = approximate(nresample = 10000))
+  network_pairs[i,3] <- pvalue(model)[1]
+  
+  model <-oneway_test(ns_rank ~ type_of_DV | weekly , data = temp, alternative="two.sided", distribution = approximate(nresample = 10000))
+  network_pairs[i,5] <- pvalue(model)[1]
+  
+  model <-oneway_test(ns_rank ~ type_of_DV | weekly , data = temp, alternative="less", distribution = approximate(nresample = 10000))
+  network_pairs[i,4] <- pvalue(model)[1]
+}
+
+# calculated all pairwise comparison p value
+
+network_pairs %>% filter(perm.test.greater < 0.2) 
+
+# compare each pair of traits + network pairs
+network_list <- c("bi_Degree_undir_page_views"    ,      "bi_Closeness_undir_page_views"   ,  "bi_constraint_page_views", 
+                  "bi_Betweenness_undir_page_views",     "bi_eigen_undir_page_views" ,        "bi_page_rank_page_views",  
+                  "bi_transitivity_page_views" ,        "bi_eff_size_page_views",       "bi_density_page_views",
+                  "bi_authority_page_views",           "bi_hub_page_views")
+trait_list <- c("bi_coleman_liau_index_page_views",   "bi_content_length_page_views",    "bi_difficult_words_page_views",
+                "bi_flesch_reading_score_page_views", "bi_image_by_length_page_views" ,  "bi_num_categories_page_views",
+                "bi_num_cite_temp_page_views",        "bi_num_lv2_heading_page_views",   "bi_num_page_links_page_views",
+                "bi_num_references_page_views",       "hasBox_page_views" )
+trait_network_pairs <- crossing(trait_list, network_list)
+trait_network_pairs$perm.test.greater <- NA
+trait_network_pairs$perm.test.less <- NA
+trait_network_pairs$perm.test.twoside <- NA
+
+for(i in 1:121){
+  getA <- trait_network_pairs[i,1]
+  getB <- trait_network_pairs[i,2]
+  temp <- nc_rank %>% filter(type_of_DV == as.character(get('getA')) | type_of_DV == as.character(get('getB')) )
+  
+  model <-oneway_test(ns_rank ~ type_of_DV | weekly , data = temp, alternative="greater", distribution = approximate(nresample = 10000))
+  trait_network_pairs[i,3] <- pvalue(model)[1]
+  
+  model <-oneway_test(ns_rank ~ type_of_DV | weekly , data = temp, alternative="two.sided", distribution = approximate(nresample = 10000))
+  trait_network_pairs[i,5] <- pvalue(model)[1]
+  
+  model <-oneway_test(ns_rank ~ type_of_DV | weekly , data = temp, alternative="less", distribution = approximate(nresample = 10000))
+  trait_network_pairs[i,4] <- pvalue(model)[1]
+}
+
+trait_network_pairs %>% filter(perm.test.greater < 0.2) 
+
+#############################
+##input: nc_rank, network_nc_rank
+##final output
+#############################
+write.csv(trait_network_pairs, "/home/rstudio/WikiEvolution/trait_network_pairs_pvalue.csv")
+write.csv(network_pairs, "/home/rstudio/WikiEvolution/onlynetwork_pairs_pvalue.csv")
