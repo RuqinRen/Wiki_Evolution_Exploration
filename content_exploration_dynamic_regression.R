@@ -305,7 +305,10 @@ fit3 <- ardlDlm(formula = formula3,  data = weekly_avg, p = 8,  q = 1, remove = 
 summary(fit3)
 
 #GoF test
-Box.test(x, type="Ljung-Box")
+#x <- rnorm(1000)  # no unit-root
+#adf.test(x)
+#Box.test(x, type="Ljung-Box")
+                      
 Box.test(residuals(fit3),type="Ljung-Box")
 adf.test(residuals(fit3))
 
