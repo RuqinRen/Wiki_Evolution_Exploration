@@ -2,6 +2,7 @@ library(tm)
 library(dplyr)
 library(tidyr)
 library(SnowballC)
+library(dLagM)
 
 dist2d <- function(a,b,c) {
   v1 <- b - c
@@ -271,6 +272,40 @@ tfm=arimax(weekly_avg$exploration,
            transfer=list(c(0,1),c(0,1),c(0,1),c(0,1)),
            method='ML')
 tfm
+#calculate p value
 (1-pnorm(abs(tfm$coef)/sqrt(diag(tfm$var.coef))))*2
 
+#calculate R sqrd
+cor(fitted(tfm3)[-c(0:6)],exploration_2diff[-c(0:6)], use = "pairwise.complete.obs")^2
+
+##############################
+# Final version: ARDL model in dLagM package.
+# did not use ARIMAX function
+#############################
+formula2 <- exploration ~  numOfreferences +    imagesByLength 
+remove = list(p = list(imagesByLength = c(1,2,3,4,5,6,7,8),
+                       numOfreferences =c(1,2,3,4,5,6,7,8)))
+
+# eff_size = c(0,1,2,3,4,5),
+# hub = c(1,2,3,4,5,6,7),
+# eigen_undir = c(1,2,3,4,5,6,7),
+# density = c(1,2,3,4,5,6,7)))
+fit1 <- ardlDlm(formula = formula2,  data = weekly_avg, p = 8,  q = 1, remove = remove)
+summary(fit1)
+
+formula3 <- exploration ~  numOfreferences +   imagesByLength +  eff_size + density 
+
+remove = list(p = list(
+  imagesByLength = c(1,2,3,4,5,6,7,8),
+  numOfreferences =c(1,2,3,4,5,6,7,8),
+  eff_size = c(0,1,2,3,4,5,6,8),
+  density = c(0,1,2,3,4,5,7,8)))
+
+fit3 <- ardlDlm(formula = formula3,  data = weekly_avg, p = 8,  q = 1, remove = remove)
+summary(fit3)
+
+#GoF test
+Box.test(x, type="Ljung-Box")
+Box.test(residuals(fit3),type="Ljung-Box")
+adf.test(residuals(fit3))
 
